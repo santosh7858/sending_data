@@ -2,6 +2,8 @@ import time
 import os
 import json
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # =========================================================
 # CLEAN PUBLISHER CONFIGURATION (ENVIRONMENT VARIABLES)
@@ -28,6 +30,30 @@ SLEEP_SECONDS = SLEEP_MINUTES * 60
 
 # --- HISTORY FILE (To prevent duplicates locally) ---
 SENT_FILE = "geekbuying_sent.txt"
+
+
+# =========================================================
+# RENDER WEB SERVICE PORT BINDING FIX
+# =========================================================
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP server handler so Render Web Service marks the app as LIVE."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"OK - Publisher bot is active and running.")
+        
+    def log_message(self, format, *args):
+        return  # Disable default logging to keep Render logs clean
+
+def start_health_check_server():
+    """Starts background HTTP server for Render port detection."""
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"🌐 Health Check server listening on port {port} (Render deployment fix)...")
+    server.serve_forever()
+
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -61,18 +87,18 @@ def delete_from_supabase(pid):
     except Exception as e:
         print(f"⚠️ Error deleting from Supabase: {e}")
 
+
 # =========================================================
 # PUBLISHING LOGIC
 # =========================================================
 
 def send_to_website_api(deal):
     """Sends clean data from Supabase to your api2.php safely."""
-    print(f"🤖 Sending '{deal['title'][:30]}...' to Website API2...")
+    print(f"🤖 Sending '{deal.get('title', '')[:30]}...' to Website API...")
     
     # --- MERGING AI_CONTEXT & FEATURES ---
     original_ai_context = deal.get('ai_context', '')
     
-    # Features text ya JSON array me ho sakta hai, usko safely extract kar rahe hain
     raw_features = deal.get('features', [])
     if isinstance(raw_features, str):
         try:
@@ -82,18 +108,16 @@ def send_to_website_api(deal):
     else:
         features_list = raw_features
         
-    # Features ko ek proper text me convert karna taki AI ko padhne me asani ho
     features_text = ""
     if features_list and isinstance(features_list, list):
         features_text = "\n- ".join(features_list)
         
-    # Dono ko merge kar diya (ai_context + features)
     combined_information = f"{original_ai_context}\n\nDetailed Features:\n- {features_text}"
     
     payload = {
         'api_key': API_SECRET_KEY,
         'title': deal.get('title', ''),
-        'information': combined_information,  # Yahan merged data ja raha hai
+        'information': combined_information,
         'affiliate_link': deal.get('link', ''),
         'images': deal.get('images', ''),
         'price': deal.get('price', 0), 
@@ -116,8 +140,6 @@ def send_to_website_api(deal):
 
 def send_telegram_alert(deal):
     """Sends ALL images as a Media Group album along with text to Telegram."""
-    
-    # Safely parse features (Since it might be a JSON string from Supabase)
     raw_features = deal.get('features', [])
     if isinstance(raw_features, str):
         try:
@@ -143,20 +165,17 @@ def send_telegram_alert(deal):
         f"✈️ _Global Shipping!_"
     )
     
-    # Telegram Caption Length Limit safety (1024 chars)
     if len(msg) > 1000:
         msg = msg[:990] + "...\n✈️ _Global Shipping!_"
     
     for chat_id in TARGET_CHATS:
         try:
             if len(images) > 1:
-                # Send multiple images as an album
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMediaGroup"
                 media_group = []
                 for idx, img in enumerate(images):
                     if not img.strip(): continue
                     if idx == 0:
-                        # First image contains the caption
                         media_group.append({"type": "photo", "media": img.strip(), "caption": msg, "parse_mode": "Markdown"})
                     else:
                         media_group.append({"type": "photo", "media": img.strip()})
@@ -166,13 +185,11 @@ def send_telegram_alert(deal):
                     requests.post(url, data=payload, timeout=15)
                 
             elif len(images) == 1 and images[0].strip():
-                # Send single image
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
                 payload = {"chat_id": chat_id, "photo": images[0].strip(), "caption": msg, "parse_mode": "Markdown"}
                 requests.post(url, data=payload, timeout=10)
                 
             else:
-                # Send text only
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                 payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown", "disable_web_page_preview": False}
                 requests.post(url, data=payload, timeout=10)
@@ -180,6 +197,7 @@ def send_telegram_alert(deal):
             print(f"📢 Telegram Sent to {chat_id}")
         except Exception as e:
             print(f"⚠️ Telegram Error for {chat_id}: {e}")
+
 
 # =========================================================
 # MAIN SUPABASE FETCH LOOP
@@ -208,8 +226,8 @@ def run_publisher():
             products = response.json()
             print(f"📦 Found {len(products)} total products in database.\n")
             
+            published_count = 0
             for deal in products:
-                # Using Supabase's unique row 'id' as the duplicate tracker
                 pid = str(deal.get('id'))
                 
                 if not pid or pid in sent_ids:
@@ -229,11 +247,15 @@ def run_publisher():
                     
                     sent_ids.add(pid)
                     save_sent_id(pid)
-                    print(f"✅ Product ID {pid} marked as SENT locally.")
+                    print(f"✅ Product ID {pid} successfully posted and removed from queue.")
+                    published_count += 1
                     
-                    # Rest to avoid rate-limiting server and telegram
-                    print("⏳ Resting for 40 seconds before next product...\n")
-                    time.sleep(40) 
+                    # 🛑 BREAK after 1 post so that it strictly waits 30 minutes before the next post!
+                    print(f"🛑 1 Post complete. Breaking loop to strictly enforce {SLEEP_MINUTES}-minute delay.")
+                    break
+            
+            if published_count == 0:
+                print("ℹ️ No new products to publish right now.")
                     
         else:
             print(f"❌ Failed to fetch from Supabase ({response.status_code}): {response.text}")
@@ -244,8 +266,11 @@ def run_publisher():
     print("\n💤 Cycle complete.")
 
 if __name__ == "__main__":
-    # Loop infinitely with 30-minute sleep interval for Render
+    # 1. Start Web Server in background thread for Render Port Detection
+    threading.Thread(target=start_health_check_server, daemon=True).start()
+
+    # 2. Loop infinitely with 30-minute sleep interval for Render
     while True:
         run_publisher()
-        print(f"\n⏳ Cooldown of {SLEEP_MINUTES} minutes ({SLEEP_SECONDS}s) before checking Supabase again...")
+        print(f"\n⏳ Strictly waiting for {SLEEP_MINUTES} minutes ({SLEEP_SECONDS}s) before publishing the NEXT product...")
         time.sleep(SLEEP_SECONDS)
