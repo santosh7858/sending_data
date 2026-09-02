@@ -3,7 +3,28 @@ import os
 import json
 import requests
 import threading
+import builtins
+from datetime import datetime
+from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# =========================================================
+# LOGGING SETUP (Saves print output to file)
+# =========================================================
+LOG_FILE = "publisher.log"
+_original_print = builtins.print
+
+def custom_print(*args, **kwargs):
+    _original_print(*args, **kwargs) # Still print to Render terminal
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] " + " ".join(str(arg) for arg in args) + "\n")
+    except Exception:
+        pass
+
+# Override standard print function to capture all outputs
+builtins.print = custom_print
 
 # =========================================================
 # CLEAN PUBLISHER CONFIGURATION (ENVIRONMENT VARIABLES)
@@ -39,10 +60,29 @@ SENT_FILE = "geekbuying_sent.txt"
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Simple HTTP server handler so Render Web Service marks the app as LIVE."""
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        self.wfile.write(b"OK - Publisher bot is active and running.")
+        parsed_path = urlparse(self.path)
+        query_params = parse_qs(parsed_path.query)
+        
+        # Check if the URL contains ?logs=logs
+        if query_params.get("logs") == ["logs"]:
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # Limit output to last ~100KB to prevent browser crash on huge logs
+                    if len(content) > 100000:
+                        content = "...[TRUNCATED TO PREVENT BROWSER CRASH]...\n\n" + content[-100000:]
+                    self.wfile.write(content.encode("utf-8"))
+            else:
+                self.wfile.write(b"No logs found yet.")
+        else:
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"OK - Publisher bot is active and running.<br><br><a href='/?logs=logs'>Click here to view live logs</a>")
         
     def log_message(self, format, *args):
         return  # Disable default logging to keep Render logs clean
