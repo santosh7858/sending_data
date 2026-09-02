@@ -19,8 +19,8 @@ RAW_TARGET_CHATS = os.getenv("TARGET_CHATS", "@geekbuying_shop")
 TARGET_CHATS = [chat.strip() for chat in RAW_TARGET_CHATS.split(",") if chat.strip()]
 
 # --- WEBSITE API CONFIG ---
-API_ENDPOINT = os.getenv("API_ENDPOINT") 
-API_SECRET_KEY = os.getenv("API_SECRET_KEY") 
+API_ENDPOINT = os.getenv("API_ENDPOINT")
+API_SECRET_KEY = os.getenv("API_SECRET_KEY")
 
 # --- PUBLISHING FREQUENCY (In Minutes) ---
 SLEEP_MINUTES = int(os.getenv("SLEEP_MINUTES", "30"))
@@ -247,5 +247,5 @@ if __name__ == "__main__":
     # Loop infinitely with 30-minute sleep interval for Render
     while True:
         run_publisher()
-        print(f"\n⏳ Cooldown of {SLEEP_MINUTES} minutes (1800s) before checking Supabase again...")
+        print(f"\n⏳ Cooldown of {SLEEP_MINUTES} minutes ({SLEEP_SECONDS}s) before checking Supabase again...")
         time.sleep(SLEEP_SECONDS)
